@@ -325,7 +325,7 @@
         <div class="header">
             <div class="header-icon">🌿🌸🌿</div>
             <h1>Heimische Wildpflanzen</h1>
-            <div class="version">Version 1.8.0</div>
+            <div class="version">Version 1.9.0</div>
         </div>
 
         <div class="navigation-grid">
@@ -387,6 +387,23 @@
     let currentCardIndex = 0;
     let currentUtterance = null;
     let isAutoNavigating = false;
+    let cachedVoices = [];
+    let resumeInterval = null;
+
+    // Android/Chrome laden die Stimmenliste oft erst verzögert und asynchron.
+    // Wir cachen sie, sobald sie verfügbar ist, damit speakCard() eine passende deutsche Stimme findet.
+    function refreshVoices() {
+        if ('speechSynthesis' in window) {
+            const voices = window.speechSynthesis.getVoices();
+            if (voices && voices.length > 0) {
+                cachedVoices = voices;
+            }
+        }
+    }
+    if ('speechSynthesis' in window) {
+        refreshVoices();
+        window.speechSynthesis.onvoiceschanged = refreshVoices;
+    }
 
     const plantData = {
         fruehblueher: [
@@ -893,29 +910,57 @@
     }
 
     function speakCard(autoNavigateAfter = false) {
-        stopSpeech();
+        if (!('speechSynthesis' in window)) return;
+
+        window.speechSynthesis.cancel();
+        clearInterval(resumeInterval);
+
         const list = plantData[currentCategory];
         if (!list || !list[currentCardIndex]) return;
         const item = list[currentCardIndex];
+        const text = `${item.title}. Erstens: ${item.v1} Zweitens: ${item.v2} Drittens: ${item.v3}`;
 
-        if ('speechSynthesis' in window) {
-            const text = `${item.title}. Erstens: ${item.v1} Zweitens: ${item.v2} Drittens: ${item.v3}`;
+        // Android/Chrome-Bugfix: Ruft man speak() direkt nach cancel() auf, wird die Ausgabe
+        // auf vielen Android-Geräten stillschweigend ignoriert. Eine kurze Pause behebt das.
+        setTimeout(() => {
             currentUtterance = new SpeechSynthesisUtterance(text);
             currentUtterance.lang = 'de-DE';
+            currentUtterance.rate = 1;
+            currentUtterance.pitch = 1;
 
-            if (autoNavigateAfter) {
-                currentUtterance.onend = function() {
-                    if (isAutoNavigating) {
-                        navigateCard(1);
-                    }
-                };
+            refreshVoices();
+            const germanVoice = cachedVoices.find(v => v.lang && v.lang.toLowerCase().startsWith('de'));
+            if (germanVoice) {
+                currentUtterance.voice = germanVoice;
             }
 
+            currentUtterance.onend = function() {
+                clearInterval(resumeInterval);
+                if (autoNavigateAfter && isAutoNavigating) {
+                    navigateCard(1);
+                }
+            };
+            currentUtterance.onerror = function() {
+                clearInterval(resumeInterval);
+            };
+
             window.speechSynthesis.speak(currentUtterance);
-        }
+
+            // Android/Chrome-Bugfix: Die Sprachausgabe bricht auf manchen Geräten nach rund
+            // 15 Sekunden automatisch ab. Ein periodisches "Aufwecken" verhindert das.
+            resumeInterval = setInterval(() => {
+                if (!window.speechSynthesis.speaking) {
+                    clearInterval(resumeInterval);
+                    return;
+                }
+                window.speechSynthesis.pause();
+                window.speechSynthesis.resume();
+            }, 5000);
+        }, 50);
     }
 
     function stopSpeech() {
+        clearInterval(resumeInterval);
         if ('speechSynthesis' in window) {
             window.speechSynthesis.cancel();
         }
